@@ -1,14 +1,19 @@
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional
+from pathlib import Path
+from typing import Callable, Dict, List, Optional
 
 import pandas as pd
 import plotly.express as px
+import requests
 import streamlit as st
+from streamlit.runtime.scriptrunner import get_script_run_ctx
 
 try:
     from streamlit.runtime.scriptrunner import get_script_run_ctx
 except Exception:  # pragma: no cover
     get_script_run_ctx = None
+
+import numpy as np
 
 from patentes.hrhc_visualizador_utils import (
     apply_filters as apply_filters_hrhc,
@@ -89,6 +94,435 @@ def apply_custom_style() -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+@st.cache_data
+def fetch_catalogue() -> pd.DataFrame:
+    """Carga el catálogo de datasets desde datasets.json."""
+    datasets_path = Path(__file__).parent.parent / "datasets.json"
+    if not datasets_path.exists():
+        st.error("Archivo datasets.json no encontrado. Ejecuta prueba/apis.py primero.")
+        return pd.DataFrame()
+    try:
+        import json
+        with open(datasets_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return pd.DataFrame(data)
+    except Exception as e:
+        st.error(f"Error cargando catálogo: {e}")
+        return pd.DataFrame()
+
+
+def search_catalogue(catalogue_df: pd.DataFrame, query: str, selected_tags: List[str]) -> pd.DataFrame:
+    """Filtra el catálogo por búsqueda de texto y tags."""
+    if not query and not selected_tags:
+        return catalogue_df
+    
+    filtered_df = catalogue_df.copy()
+    query_lower = query.lower() if query else ""
+    
+    if query:
+        # Filtrar por texto en nombre o descripción
+        text_mask = (
+            filtered_df["nombre"].str.lower().str.contains(query_lower, na=False) |
+            filtered_df["descripcion"].str.lower().str.contains(query_lower, na=False)
+        )
+        filtered_df = filtered_df[text_mask]
+    
+    if selected_tags:
+        # Filtrar por tags (asumiendo tags es una lista en cada fila)
+        tag_mask = filtered_df["tags"].apply(lambda tags: any(tag in tags for tag in selected_tags) if tags else False)
+        filtered_df = filtered_df[tag_mask]
+    
+    return filtered_df
+
+
+@st.cache_data
+def preview_dataset(api_url: str, limit: int = 50) -> pd.DataFrame:
+    """Obtiene una previsualización limitada del dataset."""
+    try:
+        params = {"$limit": limit}
+        response = requests.get(api_url, params=params, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        return pd.DataFrame(data)
+    except Exception as e:
+        st.error(f"Error obteniendo previsualización: {e}")
+        return pd.DataFrame()
+
+
+def save_temp_cache_catalogue(df: pd.DataFrame) -> None:
+    """No guarda cache para catálogo, ya que usa st.cache_data."""
+    pass
+
+
+@st.cache_data
+def fetch_full_dataset(api_url: str) -> pd.DataFrame:
+    """Obtiene el dataset completo usando paginación."""
+    try:
+        all_records = []
+        offset = 0
+        page_size = 1000
+        
+        while True:
+            params = {"$limit": page_size, "$offset": offset}
+            response = requests.get(api_url, params=params, timeout=30)
+            response.raise_for_status()
+            chunk = response.json()
+            
+            if not chunk:
+                break
+            
+            all_records.extend(chunk)
+            
+            if len(chunk) < page_size:
+                break
+            
+            offset += page_size
+            
+            # Límite de seguridad para no descargar datasets enormes
+            if len(all_records) > 50000:
+                st.warning("Dataset muy grande. Mostrando solo los primeros 50,000 registros.")
+                break
+        
+        return pd.DataFrame(all_records)
+    except Exception as e:
+        st.error(f"Error descargando dataset completo: {e}")
+        return pd.DataFrame()
+
+
+def detect_dataset_type(dataset_info: pd.Series, preview_df: pd.DataFrame) -> str:
+    """Detecta el tipo de dataset para aplicar visualización adaptada."""
+    name = dataset_info.get("nombre", "").lower()
+    columns = preview_df.columns.str.lower().tolist()
+    
+    # Detectar patentes
+    if ("patente" in name or 
+        any(col in columns for col in ["pais", "region", "ciudad", "naturaleza", "solicitante"])):
+        return "patentes"
+    
+    # Detectar HRHC
+    if ("grupos" in name or "investigacion" in name or "hrhc" in name or
+        any(col in columns for col in ["nme_pais_gr", "nme_region_gr", "nme_clasificacion_gr"])):
+        return "hrhc"
+    
+    return "generic"
+
+
+def render_adaptive_preview(selected_dataset: pd.Series) -> None:
+    """Renderiza previsualización adaptada según el tipo de dataset."""
+    api_url = selected_dataset["api_url"]
+    
+    with st.spinner("Cargando previsualización..."):
+        preview_df = preview_dataset(api_url)
+    
+    if preview_df.empty:
+        st.warning("No se pudo cargar la previsualización del dataset.")
+        return
+    
+    dataset_type = detect_dataset_type(selected_dataset, preview_df)
+    
+    st.subheader(f"Previsualización: {selected_dataset['nombre']}")
+    
+    # Información del dataset
+    with st.expander("Información del Dataset", expanded=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write(f"**Tipo detectado:** {dataset_type.title()}")
+            st.write(f"**Última actualización:** {selected_dataset.get('ultima_actualizacion', 'N/A')}")
+        with col2:
+            st.write(f"**Tags:** {', '.join(selected_dataset.get('tags', []))}")
+            st.write(f"**API URL:** {api_url}")
+    
+    # Botón de descarga
+    col_download, col_refresh = st.columns([1, 1])
+    with col_download:
+        if st.button("📥 Descargar Dataset Completo", key="download_full"):
+            with st.spinner("Descargando dataset completo..."):
+                full_df = fetch_full_dataset(api_url)
+                if not full_df.empty:
+                    csv = full_df.to_csv(index=False)
+                    st.download_button(
+                        label="💾 Descargar CSV",
+                        data=csv,
+                        file_name=f"{selected_dataset['nombre'].replace(' ', '_')}.csv",
+                        mime="text/csv",
+                        key="download_csv"
+                    )
+                    st.success(f"Dataset descargado: {len(full_df)} registros")
+                else:
+                    st.error("No se pudo descargar el dataset completo.")
+    
+    with col_refresh:
+        if st.button("🔄 Recargar Previsualización", key="refresh_preview"):
+            st.rerun()
+    
+    # Renderizar según tipo
+    if dataset_type == "patentes":
+        render_patentes_preview(preview_df)
+    elif dataset_type == "hrhc":
+        render_hrhc_preview(preview_df)
+    else:
+        render_generic_preview(preview_df)
+
+
+def render_patentes_preview(df: pd.DataFrame) -> None:
+    """Previsualización adaptada para datasets de patentes."""
+    # Limpiar dataframe como en patentes_visualizador_utils
+    df = df.copy()
+    columns_to_fill = ["pais", "region", "ciudad", "naturaleza", "solicitante", "a_o_concesi_n"]
+    for column in columns_to_fill:
+        if column not in df.columns:
+            df[column] = ""
+    
+    for col in ["pais", "region", "ciudad", "naturaleza", "solicitante"]:
+        df[col] = df[col].fillna("").astype(str).str.strip()
+    
+    df["region"] = df["region"].replace("", "SIN_REGION")
+    df["ciudad"] = df["ciudad"].replace("", "SIN_CIUDAD")
+    df["anio_concesion"] = pd.to_numeric(df["a_o_concesi_n"], errors="coerce")
+    
+    # Filtros simples
+    with st.sidebar:
+        st.header("Filtros Rápidos")
+        if "pais" in df.columns:
+            paises = sorted(df["pais"].dropna().unique().tolist())
+            selected_pais = st.selectbox("País", ["Todos"] + paises, key="preview_pais")
+            if selected_pais != "Todos":
+                df = df[df["pais"] == selected_pais]
+    
+    # Métricas
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Registros", f"{len(df):,}")
+    col2.metric("Regiones", f"{df['region'].nunique():,}")
+    col3.metric("Ciudades", f"{df['ciudad'].nunique():,}")
+    col4.metric("Países", f"{df['pais'].nunique():,}")
+    
+    # Gráficos
+    left, right = st.columns(2)
+    with left:
+        if "region" in df.columns:
+            region_counts = df["region"].value_counts().head(15)
+            fig_region = px.bar(
+                region_counts, 
+                x=region_counts.index, 
+                y=region_counts.values,
+                title="Top 15 regiones por patentes"
+            )
+            st.plotly_chart(fig_region, use_container_width=True)
+    
+    with right:
+        if "naturaleza" in df.columns:
+            nat_counts = df["naturaleza"].value_counts().head(10)
+            fig_nat = px.pie(
+                nat_counts, 
+                values=nat_counts.values, 
+                names=nat_counts.index,
+                title="Distribución por naturaleza"
+            )
+            st.plotly_chart(fig_nat, use_container_width=True)
+    
+    st.dataframe(df.head(50))
+
+
+def render_hrhc_preview(df: pd.DataFrame) -> None:
+    """Previsualización adaptada para datasets de grupos de investigación."""
+    # Limpiar como en hrhc_visualizador_utils
+    df = df.copy()
+    required = ["nme_pais_gr", "nme_region_gr", "nme_departamento_gr", "nme_municipio_gr", 
+                "nme_clasificacion_gr", "nme_gran_area_gr", "nme_convocatoria", "ano_convo"]
+    
+    for column in required:
+        if column not in df.columns:
+            df[column] = ""
+    
+    text_cols = ["nme_pais_gr", "nme_region_gr", "nme_departamento_gr", "nme_municipio_gr", 
+                 "nme_clasificacion_gr", "nme_gran_area_gr", "nme_convocatoria"]
+    
+    for column in text_cols:
+        df[column] = df[column].fillna("").astype(str).str.strip()
+    
+    df = df[df["nme_pais_gr"].str.upper() == "COLOMBIA"]
+    df["region"] = df["nme_departamento_gr"].replace("", pd.NA).fillna(df["nme_region_gr"]).fillna("SIN_REGION")
+    df["ciudad"] = df["nme_municipio_gr"].replace("", "SIN_CIUDAD")
+    df["clasificacion"] = df["nme_clasificacion_gr"].replace("", "SIN_CLASIFICACION")
+    df["gran_area"] = df["nme_gran_area_gr"].replace("", "SIN_AREA")
+    df["anio_convocatoria"] = pd.to_datetime(df["ano_convo"], errors="coerce").dt.year
+    
+    # Filtros simples
+    with st.sidebar:
+        st.header("Filtros Rápidos")
+        if "region" in df.columns:
+            regiones = sorted(df["region"].dropna().unique().tolist())
+            selected_region = st.selectbox("Región", ["Todas"] + regiones, key="preview_region")
+            if selected_region != "Todas":
+                df = df[df["region"] == selected_region]
+    
+    # Métricas
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Grupos", f"{len(df):,}")
+    col2.metric("Regiones", f"{df['region'].nunique():,}")
+    col3.metric("Ciudades", f"{df['ciudad'].nunique():,}")
+    col4.metric("Áreas", f"{df['gran_area'].nunique():,}")
+    
+    # Gráficos
+    left, right = st.columns(2)
+    with left:
+        if "region" in df.columns:
+            region_counts = df["region"].value_counts().head(15)
+            fig_region = px.bar(
+                region_counts, 
+                x=region_counts.index, 
+                y=region_counts.values,
+                title="Top 15 regiones por grupos"
+            )
+            st.plotly_chart(fig_region, use_container_width=True)
+    
+    with right:
+        if "gran_area" in df.columns:
+            area_counts = df["gran_area"].value_counts().head(10)
+            fig_area = px.pie(
+                area_counts, 
+                values=area_counts.values, 
+                names=area_counts.index,
+                title="Distribución por gran área"
+            )
+            st.plotly_chart(fig_area, use_container_width=True)
+    
+    st.dataframe(df.head(50))
+
+
+def render_generic_preview(df: pd.DataFrame) -> None:
+    """Previsualización genérica para datasets no reconocidos."""
+    # Métricas principales
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Filas en muestra", f"{len(df):,}")
+    col2.metric("Columnas", f"{len(df.columns):,}")
+    col3.metric("Tipos de datos únicos", f"{df.dtypes.nunique():,}")
+    
+    # Contar valores no nulos
+    non_null_pct = (df.notna().sum().sum() / (len(df) * len(df.columns))) * 100
+    col4.metric("Completitud (%)", f"{non_null_pct:.1f}")
+    
+    # Tipos de columnas
+    with st.expander("Tipos de Columnas"):
+        dtypes_df = pd.DataFrame({
+            "Columna": df.columns,
+            "Tipo": df.dtypes.astype(str),
+            "No Nulos": df.notna().sum(),
+            "Únicos": df.nunique()
+        })
+        st.dataframe(dtypes_df)
+    
+    # Gráficos
+    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    if numeric_cols:
+        st.subheader("Análisis Numérico")
+        left, right = st.columns(2)
+        
+        with left:
+            # Histograma de la primera columna numérica
+            if len(numeric_cols) > 0:
+                fig_hist = px.histogram(
+                    df, 
+                    x=numeric_cols[0], 
+                    title=f"Distribución de {numeric_cols[0]}",
+                    marginal="box"
+                )
+                st.plotly_chart(fig_hist, use_container_width=True)
+        
+        with right:
+            # Boxplot si hay más de una numérica
+            if len(numeric_cols) > 1:
+                fig_box = px.box(
+                    df[numeric_cols[:5]],  # Máximo 5 para no sobrecargar
+                    title="Boxplots de variables numéricas"
+                )
+                st.plotly_chart(fig_box, use_container_width=True)
+    
+    # Gráfico de categorías si hay columnas categóricas
+    categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+    if categorical_cols:
+        st.subheader("Análisis Categórico")
+        # Tomar la primera columna categórica con pocos valores únicos
+        cat_col = None
+        for col in categorical_cols:
+            if df[col].nunique() <= 20:  # Máximo 20 categorías
+                cat_col = col
+                break
+        
+        if cat_col:
+            cat_counts = df[cat_col].value_counts().head(15)
+            fig_cat = px.bar(
+                cat_counts, 
+                x=cat_counts.index, 
+                y=cat_counts.values,
+                title=f"Top categorías en {cat_col}",
+                labels={cat_col: "Categoría", "y": "Frecuencia"}
+            )
+            st.plotly_chart(fig_cat, use_container_width=True)
+    
+    # Muestra de datos
+    st.subheader("Muestra de Datos")
+    st.dataframe(df.head(20))
+
+
+def render_catalogue(catalogue_df: pd.DataFrame) -> None:
+    """Renderiza la vista del catálogo de datasets en estilo tabla con selección de fila."""
+    st.subheader("Catálogo de Datasets")
+    
+    # Filtros en sidebar
+    with st.sidebar:
+        st.header("Filtros")
+        search_query = st.text_input("Buscar por nombre o descripción", key="catalog_search")
+        
+        # Obtener todos los tags únicos
+        all_tags = set()
+        for tags_list in catalogue_df["tags"].dropna():
+            if isinstance(tags_list, list):
+                all_tags.update(tags_list)
+        all_tags = sorted(list(all_tags))
+        
+        selected_tags = st.multiselect("Filtrar por tags", options=all_tags, key="catalog_tags")
+    
+    # Aplicar filtros
+    filtered_catalogue_df = search_catalogue(catalogue_df, search_query, selected_tags)
+    
+    # Métricas
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total datasets", len(catalogue_df))
+    col2.metric("Datasets filtrados", len(filtered_catalogue_df))
+    col3.metric("Tags únicos", len(all_tags))
+    
+    if filtered_catalogue_df.empty:
+        st.info("No se encontraron datasets que coincidan con los filtros.")
+        return
+    
+    # Preparar tabla para mostrar
+    display_df = filtered_catalogue_df.copy()
+    display_df["descripcion_corta"] = display_df["descripcion"].str[:100] + "..."
+    display_df["tags_str"] = display_df["tags"].apply(lambda x: ", ".join(x) if isinstance(x, list) else "")
+    display_df = display_df[["nombre", "descripcion_corta", "tags_str", "ultima_actualizacion", "api_url"]]
+    display_df.columns = ["Nombre", "Descripción", "Tags", "Última Actualización", "API URL"]
+    
+    # Mostrar tabla con selección de fila
+    event = st.dataframe(
+        display_df, 
+        selection_mode="single-row",
+        on_select="rerun",
+        key="catalog_table"
+    )
+    
+    # Obtener dataset seleccionado
+    selected_rows = event.selection.rows
+    if selected_rows:
+        selected_idx = selected_rows[0]
+        selected_dataset = filtered_catalogue_df.iloc[selected_idx]
+        
+        st.divider()
+        render_adaptive_preview(selected_dataset)
+    else:
+        st.info("Selecciona una fila de la tabla para ver la previsualización del dataset.")
 
 
 def render_portal_header() -> None:
@@ -417,6 +851,18 @@ VIEW_REGISTRY: Dict[str, ViewConfig] = {
         fetch_fn=fetch_hrhc_convocatoria_21,
         save_cache_fn=save_temp_cache_hrhc,
         render_fn=render_hrhc,
+    ),
+    "Catálogo de datasets": ViewConfig(
+        key="catalogo",
+        icon="📚",
+        title="Catálogo de Datasets",
+        caption="Explora y consulta datasets disponibles en datos.gov.co",
+        menu_hint="Busca y previsualiza datasets del catálogo",
+        session_df_key="df_catalogo",
+        session_cache_key="cache_path_catalogo",
+        fetch_fn=fetch_catalogue,
+        save_cache_fn=save_temp_cache_catalogue,
+        render_fn=render_catalogue,
     ),
 }
 
