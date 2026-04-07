@@ -5,6 +5,11 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+try:
+    from streamlit.runtime.scriptrunner import get_script_run_ctx
+except Exception:  # pragma: no cover
+    get_script_run_ctx = None
+
 from patentes.hrhc_visualizador_utils import (
     apply_filters as apply_filters_hrhc,
     fetch_hrhc_convocatoria_21,
@@ -445,4 +450,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    if get_script_run_ctx is not None and get_script_run_ctx() is not None:
+        main()
+    else:
+        print("Este modulo debe ejecutarse con: streamlit run streamlit_app.py")

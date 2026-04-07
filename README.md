@@ -17,6 +17,8 @@ Portal Streamlit listo para desplegar en Streamlit Cloud.
 .\.venv\Scripts\python.exe -m streamlit run streamlit_app.py
 ```
 
+> Importante: no ejecutes `streamlit_app.py` con `python`; usa siempre `streamlit run streamlit_app.py`.
+
 ## Despliegue en Streamlit Cloud
 
 - Sube este repositorio a GitHub.
