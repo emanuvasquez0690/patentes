@@ -1,4 +1,16 @@
+# API (FastAPI + servidor)
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.0.0
+
+# Datos y procesamiento
 pandas>=2.2.0
+numpy>=1.26.0
 requests>=2.31.0
-streamlit>=1.37.0
+
+# Gráficas
+matplotlib>=3.9.0
 plotly>=5.22.0
+
+# Frontend Streamlit (solo desarrollo local)
+streamlit>=1.37.0

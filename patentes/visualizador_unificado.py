@@ -44,62 +44,52 @@ class ViewConfig:
 
 
 def apply_custom_style() -> None:
-    # Obtener tema del session_state
-    is_dark = st.session_state.get("dark_mode", False)
-    
-    if is_dark:
-        # Tema oscuro
-        hero_bg = "linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)"
-        hero_text = "#ffffff"
-        card_bg = "#0f3460"
-        card_border = "#533483"
-        subtitle_opacity = "0.85"
-        home_card_bg = "#1a1a2e"
-        home_card_border = "#16213e"
-        text_color = "#e0e0e0"
-    else:
-        # Tema claro (original)
-        hero_bg = "linear-gradient(135deg, #2E4EF2 0%, #6A7BFF 100%)"
-        hero_text = "#ffffff"
-        card_bg = "#f8fbff"
-        card_border = "#E7EAF3"
-        subtitle_opacity = "0.92"
-        home_card_bg = "#ffffff"
-        home_card_border = "#E7EAF3"
-        text_color = "#4b587c"
-    
     st.markdown(
-        f"""
+        """
         <style>
-        .hero-card {{
+        .hero-card {
             border-radius: 16px;
             padding: 1rem 1.2rem;
             margin-bottom: 0.9rem;
-            background: {hero_bg};
-            color: {hero_text};
-        }}
-        .hero-title {{
+            background: linear-gradient(135deg, #2E4EF2 0%, #6A7BFF 100%);
+            color: #ffffff;
+        }
+        .hero-title {
             font-size: 1.2rem;
             font-weight: 700;
             margin-bottom: 0.15rem;
-        }}
-        .hero-subtitle {{
+        }
+        .hero-subtitle {
             font-size: 0.95rem;
-            opacity: {subtitle_opacity};
-        }}
-        .home-card {{
-            border: 1px solid {home_card_border};
+            opacity: 0.92;
+        }
+        .selector-card {
+            border: 1px solid #E7EAF3;
+            border-radius: 14px;
+            padding: 0.8rem 1rem;
+            margin-bottom: 0.8rem;
+            background: linear-gradient(135deg, #f8fbff 0%, #f3f7ff 100%);
+        }
+        .toolbar-card {
+            border: 1px solid #DCE5FF;
+            border-radius: 14px;
+            padding: 0.8rem 1rem;
+            margin-bottom: 0.8rem;
+            background: #ffffff;
+        }
+        .home-card {
+            border: 1px solid #E7EAF3;
             border-radius: 12px;
             padding: 0.9rem;
-            background: {home_card_bg};
+            background: #ffffff;
             min-height: 120px;
             margin-bottom: 0.8rem;
-        }}
-        .selector-caption {{
-            color: {text_color};
+        }
+        .selector-caption {
+            color: #4b587c;
             font-size: 0.93rem;
             margin-bottom: 0.6rem;
-        }}
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -536,18 +526,6 @@ def render_catalogue(catalogue_df: pd.DataFrame) -> None:
 
 
 def render_portal_header() -> None:
-    # Cargar y mostrar logos
-    col1, col2, col3 = st.columns([1, 2, 1])
-    
-    with col1:
-        if Path("png rionegro logo.png").exists():
-            st.image("png rionegro logo.png", width=300)
-    
-    with col3:
-        if Path("logo innovación.webp").exists():
-            st.image("logo innovación.webp", width=300)
-    
-    # Header original
     st.markdown(
         """
         <div class="hero-card">
@@ -573,18 +551,8 @@ def render_sidebar_toolbar() -> str:
         st.session_state["current_page"] = "home"
     if "toolbar_selected_name" not in st.session_state:
         st.session_state["toolbar_selected_name"] = view_names[0]
-    if "dark_mode" not in st.session_state:
-        st.session_state["dark_mode"] = False
 
     with st.sidebar:
-        # Toggle para modo oscuro
-        st.session_state["dark_mode"] = st.toggle(
-            "🌙 Modo oscuro",
-            value=st.session_state["dark_mode"],
-            key="theme_toggle"
-        )
-        st.divider()
-        
         st.markdown("## Menu")
         if st.button("🏠 Inicio", key="home_toolbar_btn", use_container_width=True):
             st.session_state["current_page"] = "home"
@@ -901,14 +869,10 @@ VIEW_REGISTRY: Dict[str, ViewConfig] = {
 
 def main() -> None:
     st.set_page_config(page_title="Portal Datos Abiertos Colombia", layout="wide")
-    apply_custom_style()  # Se aplicará con el tema correcto
+    apply_custom_style()
     render_portal_header()
 
     current_page = render_sidebar_toolbar()
-    
-    # Re-aplicar estilos después de cambiar tema
-    apply_custom_style()
-    
     if current_page == "home":
         render_home_page()
         return
